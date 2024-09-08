@@ -1,0 +1,486 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  CodeCommitRepositoryName:
+    Type: String
+    Default: "data-ingestor-gluejob"
+
+  ArtifactBucketName:
+    Type: String
+    Default: "pipeline-data-ingestor-gluejob-artifact"
+
+  MainGitBranch:
+    Type: String
+    Default: "master"
+
+  NameOfCodeBuildProjectDeployDev:
+    Type: String
+    Default: "data-ingestor-gluejob-deploy-dev"
+
+  NameOfCodeBuildProjectDeployQa:
+    Type: String
+    Default: "data-ingestor-gluejob-deploy-qa"
+
+  NameOfCodeBuildProjectDeployProd:
+    Type: String
+    Default: "data-ingestor-gluejob-deploy-prod"
+
+  NameOfPipeline:
+    Type: String
+    Default: "pipeline-data-ingestor-gluejob"
+
+Resources:
+  # This role is used for the pipeline to self mutate
+  PipelineStackCloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Action: "sts:AssumeRole"
+          Effect: Allow
+          Principal:
+            Service: cloudformation.amazonaws.com
+      Policies:
+        - PolicyName: GrantCloudFormationFullAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+
+  CloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        -
+          PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
+
+  CloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub "arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepositoryName}"
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref MainGitBranch
+      Targets:
+        - Arn: !Sub "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
+          RoleArn: !GetAtt CloudWatchEventRole.Arn
+          Id: codepipeline-AppPipeline
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - s3:*
+                  - kms:*
+                  - logs:*
+                  - codebuild:*
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "iam:PassRole"
+                Resource:
+                  - "arn:aws:iam::xxxxxxxxxxxx:role/*"
+                  - "arn:aws:iam::xxxxxxxxxxxx:role/*"
+                  - "arn:aws:iam::xxxxxxxxxxxx:role/*"
+                  - "arn:aws:iam::xxxxxxxxxxxxxxxx:role/*"
+              - Effect: Allow
+                Action:
+                  - "s3:*"
+                  - "kms:*"
+                Resource: "*"
+
+  CodeBuildProjectDeployDev:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref NameOfCodeBuildProjectDeployDev
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - aws s3 cp gluejob.py s3://pipeline-data-ingestor-gluejob-dev/scripts/
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCESS_KEY_ID
+            Value: "xxxxxxxxxxxxx"
+          - Name: AWS_SECRET_ACCESS_KEY
+            Value: "xxxxxxxxxxxxxxxxxxxx"
+      ServiceRole: !Ref CodeBuildServiceRole
+
+  CodeBuildProjectDeployQa:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref NameOfCodeBuildProjectDeployQa
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - aws s3 cp gluejob.py s3://pipeline-data-ingestor-gluejob-qa/scripts/
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCESS_KEY_ID
+            Value: "xxxxxxxxxxxxxxxx"
+          - Name: AWS_SECRET_ACCESS_KEY
+            Value: "xxxxxxxxxxxxxxxxxxxxx"
+      ServiceRole: !Ref CodeBuildServiceRole
+
+  CodeBuildProjectDeployProd:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref NameOfCodeBuildProjectDeployProd
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - aws s3 cp gluejob.py s3://pipeline-data-ingestor-gluejob-prod/scripts/
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCESS_KEY_ID
+            Value: "xxxxxxxxxxxxxxxxxx"
+          - Name: AWS_SECRET_ACCESS_KEY
+            Value: "xxxxxxxxxxxxxxxxxxxxxxxxx"
+      ServiceRole: !Ref CodeBuildServiceRole
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ArtifactBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn:
+      - ArtifactBucket
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: SSEAndSSLPolicy
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::xxxxxxxxxxxxxxxx:root
+            Action:
+            - s3:Get*
+            - s3:Put*
+            Resource: arn:aws:s3:::pipeline-data-ingestor-gluejob-artifact/*
+
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::xxxxxxxxxxxxxxx:root
+            Action: s3:ListBucket
+            Resource: arn:aws:s3:::pipeline-data-ingestor-gluejob-artifact
+
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::xxxxxxxxxxxxxxxxxx:root
+            Action:
+            - s3:Get*
+            - s3:Put*
+            Resource: arn:aws:s3:::pipeline-data-ingestor-gluejob-artifact/*
+
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::xxxxxxxxxxxxxxxxx:root
+            Action: s3:ListBucket
+            Resource: arn:aws:s3:::pipeline-data-ingestor-gluejob-artifact
+
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::xxxxxxxxxxxxxxxxx:root
+            Action:
+            - s3:Get*
+            - s3:Put*
+            Resource: arn:aws:s3:::pipeline-data-ingestor-gluejob-artifact/*
+
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::xxxxxxxxxxxxxxxxx:root
+            Action: s3:ListBucket
+            Resource: arn:aws:s3:::pipeline-data-ingestor-gluejob-artifact
+
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::xxxxxxxxxxxxxxxx:root
+            Action:
+            - s3:Get*
+            - s3:Put*
+            Resource: arn:aws:s3:::pipeline-data-ingestor-gluejob-artifact/*
+
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::xxxxxxxxxxxxxxxxx:root
+            Action: s3:ListBucket
+            Resource: arn:aws:s3:::pipeline-data-ingestor-gluejob-artifact
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RestartExecutionOnUpdate: true
+      Name: !Ref NameOfPipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+        EncryptionKey:
+          Id: "arn:aws:kms:us-east-1:xxxxxxxxxxxxxxxxx:alias/sample-crosskey"
+          Type: "KMS"
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceCodeRepo
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepositoryName
+                PollForSourceChanges: false
+                BranchName: !Ref MainGitBranch
+              OutputArtifacts:
+                - Name: App
+              RunOrder: 1
+        - Name: UpdatePipeline
+          Actions:
+            - Name: CreateChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !GetAtt PipelineStackCloudFormationExecutionRole.Arn
+                StackName: !Ref AWS::StackName
+                ChangeSetName: !Sub ${AWS::StackName}-ChangeSet
+                TemplatePath: App::codepipeline.yaml
+                Capabilities: "CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND"
+              InputArtifacts:
+                - Name: App
+              RunOrder: 1
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !GetAtt PipelineStackCloudFormationExecutionRole.Arn
+                StackName: !Ref AWS::StackName
+                ChangeSetName: !Sub ${AWS::StackName}-ChangeSet
+              OutputArtifacts:
+                - Name: !Sub ${AWS::StackName}ChangeSet
+              RunOrder: 2
+        - Name: DeployDev
+          Actions:
+            - Name: DeployIacDev
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: "CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND"
+                StackName: !Ref CodeCommitRepositoryName
+                TemplatePath: "App::iac.yaml"
+                RoleArn: "arn:aws:iam::xxxxxxxxxxxxxxx:role/samples-cross-account-cloudformation-role"
+                ParameterOverrides: |
+                  {
+                    "stage": "dev"
+                  }
+              InputArtifacts:
+                - Name: App
+              RunOrder: 1
+              RoleArn: "arn:aws:iam::xxxxxxxxxxxxxxxx:role/samples-cross-account-assume-role"
+            - Name: DeployCodeDev
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              RunOrder: 2
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectDeployDev
+              InputArtifacts:
+                - Name: App
+        - Name: DeployQa
+          Actions:
+            - Name: ManualApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+              RunOrder: 1
+            - Name: DeployIacQa
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: "CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND"
+                StackName: !Ref CodeCommitRepositoryName
+                TemplatePath: "App::iac.yaml"
+                RoleArn: "arn:aws:iam::xxxxxxxxxxxxxxxx:role/samples-cross-account-cloudformation-role"
+                ParameterOverrides: |
+                  {
+                    "stage": "qa"
+                  }
+              InputArtifacts:
+                - Name: App
+              RunOrder: 2
+              RoleArn: "arn:aws:iam::xxxxxxxxxxxxxx:role/samples-cross-account-assume-role"
+            - Name: DeployCodeQa
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              RunOrder: 3
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectDeployQa
+              InputArtifacts:
+                - Name: App
+        - Name: DeployProd
+          Actions:
+            - Name: ManualApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+              RunOrder: 1
+            - Name: DeployIacProd
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: "CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND"
+                StackName: !Ref CodeCommitRepositoryName
+                TemplatePath: "App::iac.yaml"
+                RoleArn: "arn:aws:iam::xxxxxxxxxxxxxxxx:role/samples-cross-account-cloudformation-role"
+                ParameterOverrides: |
+                  {
+                    "stage": "prod"
+                  }
+              InputArtifacts:
+                - Name: App
+              RunOrder: 2
+              RoleArn: "arn:aws:iam::xxxxxxxxxxxxxxxx:role/samples-cross-account-assume-role"
+            - Name: DeployCodeProd
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              RunOrder: 3
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectDeployProd
+              InputArtifacts:
+                - Name: App
+
+Outputs:
+  CodePipelineUrl:
+    Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${Pipeline}

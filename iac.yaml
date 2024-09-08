@@ -1,0 +1,144 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  stage:
+    Type: String
+    AllowedValues:
+      - dev
+      - qa
+      - prod
+
+Conditions:
+  IsProd: !Equals
+    - !Ref stage
+    - prod
+  IsDev: !Equals
+    - !Ref stage
+    - dev
+  IsQa: !Equals
+    - !Ref stage
+    - qa
+  IsNotProd: !Not [!Condition IsProd]
+
+Resources:
+  S3BucketGlueJobDataIngestion:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub pipeline-odata-ingestion-gluejob-${stage}
+
+  GlueJobDataIngestionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: /sample/glue-job/odata-ingestion-gluejob
+      RetentionInDays: 60
+
+  DataIngestionsGlueJobDateParameter:
+    Condition: IsNotProd
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sample/data-ingestor-schedule-date
+      Type: String
+      Value: '{tables: dates}'
+
+  DataIngestionsGlueJobParameters:
+    Condition: IsNotProd
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sample/data-ingestor-parameters
+      Type: String
+      Value: '{"Secrets": "values"}'
+
+  DataIngestionsGlueJobCredentials:
+    Condition: IsNotProd
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: sample/data-ingestor-credentials
+      SecretString: '{"Secret": "values"}'
+
+  GlueJobDataIngestion:
+    Type: AWS::Glue::Job
+    DependsOn:
+      - S3BucketGlueJobDataIngestion
+      - GlueServiceRoleDataIngestion
+      - GlueJobDataIngestionLogGroup
+    Properties:
+      Name: odata-ingestion-gluejob
+      Role: !GetAtt GlueServiceRoleDataIngestion.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub s3://pipeline-data-ingestion-gluejob-${stage}/scripts/gluejob.py
+      Connections:
+        Connections: !If
+          - IsDev
+          - [SiscorpNetworkConnection]
+          - [NetworkConnection]
+      DefaultArguments:
+        '--TempDir': !Sub s3://pipeline-odata-ingestion-gluejob-${stage}/temp
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--enable-continuous-log-filter': 'true'
+        '--Environment': !Sub ${stage}
+        '--JobTriggerOrigin': OnDemand
+        '--JobMode': allTables
+        '--additional-python-modules': s3://sample/python/pymssql/2.3.0/pymssql-2.3.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl,s3://op-libs-lwsa-s3/python/psycopg2/2.9.9/psycopg2_binary-2.9.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+        '--continuous-log-logGroup': !Ref GlueJobDataIngestionLogGroup
+      GlueVersion: '4.0'
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      MaxRetries: 0
+      WorkerType: !If
+        - IsProd
+        - "G.4X"
+        - "G.2X"
+      NumberOfWorkers: 2
+
+  GlueServiceRoleDataIngestion:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+      Policies:
+        - PolicyName: OpBucDataIngestionsParametersPolicyAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Sid: VisualEditor0
+                Action:
+                  - kms:GenerateDataKey*
+                  - kms:Decrypt
+                Resource: '*'
+              - Effect: Allow
+                Sid: VisualEditor1
+                Action:
+                  - secretsmanager:*
+                  - ssm:*
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  GlueJobTriggerDataIngestion:
+    Type: AWS::Glue::Trigger
+    Condition: IsProd
+    Properties:
+      Name: TwentyFourHoursGlueDataIngestionTrigger
+      Description: Scheduled trigger
+      Type: SCHEDULED
+      Schedule: cron(0 4 * * ? *)
+      StartOnCreation: true
+      Actions:
+        - JobName: !Ref GlueJobDataIngestion
+          Arguments:
+            '--JobTriggerOrigin': Scheduled
